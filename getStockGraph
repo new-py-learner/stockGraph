@@ -1,0 +1,405 @@
+# -*- coding:utf-8 -*-
+
+import math
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+import matplotlib.dates as mdates
+import tushare as ts # 该模块是一个免费提供股票交易数据的API<br><br>
+
+from pytdx.exhq import TdxExHq_API
+from pytdx.hq import TdxHq_API
+from pytdx.params import TDXParams
+import pandas as pd
+import csv
+import os
+
+# 绘图显示中文设置
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+sns.set_style('white',{'font.sans-serif':['simhei','Arial']})
+
+
+# 获取股票价格
+def getpriceBytu(code, start, end):
+    # 第一个参数是获取股票数据的股票代码串，第二个参数是开始日期，第三个参数是结束日期
+    data = ts.get_hist_data(code,start,end) 
+    #按升序日期排序
+    data=data[::-1]
+    return data
+
+#获取大盘数据
+def getCompositeIndex(market, start, end):
+    data = ts.get_hist_data(market,start,end) 
+    #按升序日期排序 
+    data=data[::-1]
+    return data
+
+#根据代码获取公司名称
+def getCompyName(code):
+     #获取基础股票信息
+    base=ts.get_stock_basics()
+    #得到具体公司信息
+    company=base[base.index==code]
+    return company.ix[0,'name']
+
+
+# 数据集名称
+stockprice_file = 'stockprice.csv'
+#将企业股价数据保存到CSV文件
+def saveData(name,xdate,pricelist):
+        
+    file_header=['name']
+    for i in xdate:
+        file_header.append(i.strftime('%Y-%m-%d'))
+    file_data=[]
+    file_data.append(name)
+    for i in pricelist:
+        file_data.append(i)
+         
+    # 如果当前文件夹下没有stockprice.csv,则创建该文件
+    if not os.path.exists(stockprice_file):
+        with open(stockprice_file, "w", newline='') as f:
+            writer = csv.writer(f,dialect='excel')
+            writer.writerows([file_header])
+            writer.writerows([file_data])
+            f.close()
+    else:
+        with open(stockprice_file, "a", newline='') as f:
+            writer = csv.writer(f,dialect='excel')
+            writer.writerows([file_data])
+            f.close()
+    
+    
+#绘制单个企业股价曲线
+def getStockLie(code,start,end):
+    #获取股价
+    res=getpriceBytu(code, start, end)
+    close_list = (res['close']).values
+    xaxis=  [datetime.strptime(d, '%Y-%m-%d').date() for d in res.index]
+    name=getCompyName(code)  
+    
+    #保存企业股价数据到CSV文件
+    saveData(name,xaxis,close_list)
+    
+    # 线条设置
+    df = pd.DataFrame(dict(date=xaxis,price=close_list)) 
+    #seaborm模式画图
+    g=sns.lineplot(x="date", y="price", label=name,linewidth=1,marker='o', data=df)
+    #matplotlib模式画图
+#    plt.plot(xaxis, close_list, label=name, linewidth=1, marker='o', markersize=2)
+    price=(float(close_list[-1])-float(close_list[0]))/float(close_list[0])*100
+    #通过标注设置涨跌幅，不同曲线容易重合，因此直接返回，统一显示
+#    plt.annotate("%s涨跌幅：%.2f%%" %(name,price), xy = (xaxex[-4], close_list[-1]), xytext = (xaxex[-4], close_list[-1]))
+    #返回该股票的涨跌幅
+    return '%s：%.2f%%' %(name,price)
+
+
+#绘制多个企业股价图
+def getMultilStockGraph(codelist,start,end):
+    plt.clf()
+    fig = plt.figure(figsize=(12,8),dpi=80)
+    ax = fig.add_subplot(1,1,1)
+    #指定X轴的以日期格式（带小时）显示
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+    
+    #统计企业涨跌幅信息
+    chanelist=[]
+    for i in codelist:
+        chanelist.append(getStockLie(i,start,end))
+    
+    plt.gcf().autofmt_xdate()  # 自动旋转日期标记
+    
+    # 打印表头
+    plt.xlabel('')
+    plt.ylabel('股价')
+#    name=getCompyName(code)
+    plt.title('2019-315后电子烟相关上市企业股价走势')
+    #根据企业个数，调整图例分类的列数
+    codelen=round(math.sqrt(len(codelist)))
+    plt.legend(loc='center left',ncol=codelen)
+    plt.show()
+    
+    #打印企业涨跌幅
+    print(chanelist)
+    #打印指数涨跌幅
+    printMarketIdxChange()
+    
+
+#打印大盘涨跌幅
+def printMarketIdxChange():
+    MarketIdx=getCompositeIndex('sz', start, end)
+    market_list=(MarketIdx['close']).values 
+    szprice=(float(market_list[-1])-float(market_list[0]))/float(market_list[0])*100
+    print("%s：%.2f%%" %('深证指数',szprice))
+     
+    MarketIdx=getCompositeIndex('sh', start, end)
+    market_list=(MarketIdx['close']).values 
+    shprice=(float(market_list[-1])-float(market_list[0]))/float(market_list[0])*100
+    
+    print("%s：%.2f%%" %('上证指数',shprice))
+    
+
+#使用seaborn绘制
+def plotwithSeaborn(code,start, end):
+    sns.set(font="simhei")
+    
+    MarketIdx=getCompositeIndex(code, start, end)
+    x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in MarketIdx.index]
+    market_list=(MarketIdx['close']).values
+    
+    df = pd.DataFrame(dict(date=x,price=market_list)) 
+    
+    g=sns.lineplot(x="date", y="price", data=df)
+#    g = sns.relplot(x="date", y="price", kind="line", data=df )
+    g.fig.autofmt_xdate()
+    
+
+#根据code公司所属上市地，绘制相应大盘指数图
+def getMarketIndxGraph(code,start,end):
+    #判断企业所属上市地
+    if code.startswith('00')or code.startswith('200')or code.startswith('300'):
+        MarketIdx=getCompositeIndex('sz', start, end)
+        name='深证指数'
+    else:
+        MarketIdx=getCompositeIndex('sh', start, end)
+        name='上证指数'
+    x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in MarketIdx.index]
+    market_list=(MarketIdx['close']).values
+    
+    
+    plt.clf()
+    # 线条设置
+    plt.plot(x, market_list, label='大盘指数', linewidth=1, color='red', marker='o', markerfacecolor='red', markersize=2)
+
+    # 取数列最大数值与最小值做图表的边界值。
+    plt.ylim(min(market_list)-1, max(market_list)+1)
+    plt.gcf().autofmt_xdate()  # 自动旋转日期标记
+
+    # 打印表头
+    #plt.xlabel('time')
+    plt.ylabel('price')
+    plt.title('%s趋势'%(name))
+    plt.legend()
+    plt.show()
+    
+#绘制股价与大盘指数复合图
+def getStockAndIndexGraph(code,start,end):
+    
+    #获取股价
+    res=getpriceBytu(code, start, end)
+    close_list = (res['close']).values
+    x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in res.index]
+    
+    Compname=getCompyName(code)
+     
+    #保存企业股价数据到CSV文件
+    saveData(Compname,x,close_list)
+
+    plt.clf()
+    fig = plt.figure(figsize=(8,8),dpi=80)
+    ax = fig.add_subplot(111)
+    #指定X轴的以日期格式（带小时）显示
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y%m%d'))
+    
+    #seaborm模式画图
+#    df = pd.DataFrame(dict(date=x,price=close_list))
+#    g=sns.lineplot(x="date", y="price", label='公司股价',linewidth=1,color='blue',marker='o', data=df)
+
+    # 线条设置
+    ax.plot(x, close_list, label='公司股价', linewidth=1, color='blue', marker='o', markersize=2)
+    # 取数列最大数值与最小值做图表的边界值。
+    ax.set_ylim(min(close_list)-1, max(close_list)+2)
+    ax.legend(loc='upper left')
+    
+    if code.startswith('00')or code.startswith('200')or code.startswith('300'):
+        MarketIdx=getCompositeIndex('sz', start, end)
+        Marketname='深证指数'
+    else:
+        print('上证指数(000001)')
+        MarketIdx=getCompositeIndex('sh', start, end)
+        Marketname='上证指数'
+    
+    x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in MarketIdx.index]
+    market_list=(MarketIdx['close']).values
+    
+    ax2 = ax.twinx()  
+#    df = pd.DataFrame(dict(date=x,price=market_list)) 
+#    g=sns.lineplot(x="date", y="price", label='大盘指数',linewidth=1,color='red',marker='o', data=df)
+    ax2.plot(x, market_list, label='大盘指数', linewidth=1, color='red', marker='o', markerfacecolor='red', markersize=2)
+
+    # 取数列最大数值与最小值做图表的边界值。
+    ax2.set_ylim(min(market_list)-1, max(market_list)+50)
+#    ax2.set_xlim(min(x), max(x))
+    ax2.legend(loc='upper center')
+    
+    plt.gcf().autofmt_xdate()  # 自动旋转日期标记
+
+    plt.title('%s股价与%s趋势'%(Compname,Marketname))
+#    plt.fill_between(x[:21],0,max(market_list)+50,facecolor='#EEEEEE',alpha=0.5)
+#    plt.fill_between(x[-15:],0,max(market_list)+50,facecolor='#EEEEEE',alpha=0.5)
+    #plt.legend()
+    plt.show()
+    
+
+
+
+
+#获取香港主板股票数据
+def getHKStock(code,start,end):
+   #标准行情 
+#   apiHq = TdxHq_API()
+#   #开始连接通信达服务器
+#   if apiHq.connect('119.147.212.81', 7709):
+#       print('success')
+#   else:
+#       print('failed')
+#   data = apiHq.to_df(apiHq.get_security_bars(9, 0, '000001', 0, 10)) # 返回DataFrame
+#   print(data)
+   
+   #扩展行情
+   api = TdxExHq_API()
+   if api.connect('180.153.18.176', 7721):
+        print('success')
+   else:
+       print('failed')
+   #print(api.get_markets())    
+#   data=api.get_instrument_quote(40, "CTRP")
+   data=api.get_history_instrument_bars_range(31,code, start,end)
+   #转为dataframe
+   res=api.to_df(data)
+   print(res)
+   x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in res]
+   
+   plt.clf()
+   fig = plt.figure()
+   ax = fig.add_subplot(111)
+   # 线条设置
+   ax.plot(x, close_list, label='公司股价', linewidth=1, color='blue', marker='o', markerfacecolor='blue', markersize=2)
+   # 取数列最大数值与最小值做图表的边界值。
+   ax.set_ylim(min(close_list)-1, max(close_list)+2)
+ 
+
+   
+
+#三全食品
+def sqsp():
+   start = '2019-01-10'
+   end = '2019-03-26'
+   code='002216'
+   return start,end,code
+#方正科技
+def fzkj():
+   start = '2019-02-05'
+   end = '2019-04-08'
+   code='600601'
+   return start,end,code
+
+#视觉中国
+def sjzg():
+   start = '2019-03-05'
+   end = '2019-04-12'
+   code='000681'
+   return start,end,code
+
+#东风股份
+def dfgf():
+   start = '2019-02-15'
+   end = '2019-04-12'
+   code='601515'
+   return start,end,code
+
+#顺灏股份 
+def shgf():
+   start = '2019-02-15'
+   end = '2019-04-12'
+   code='002565'
+   return start,end,code
+
+#劲嘉股份
+def jjgf():
+   start = '2019-02-15'
+   end = '2019-04-12'
+   code='002191'
+   return start,end,code
+
+#华宝股份
+def hbgf():
+   start = '2019-02-15'
+   end = '2019-04-12'
+   code='300741'
+   return start,end,code
+#美盈森
+def mys():
+   start = '2019-02-15'
+   end = '2019-04-12'
+   code='002303'
+   return start,end,code
+# 盈趣科技
+def yqkj():
+   start = '2019-02-15'
+   end = '2019-04-12'
+   code='002925'
+   return start,end,code
+# 亿纬锂能
+def ywln():
+   start = '2019-02-15'
+   end = '2019-04-12'
+   code='300014'
+   return start,end,code
+#和而泰
+def hlt():
+   start = '2019-02-15'
+   end = '2019-04-12'
+   code='002402'
+   return start,end,code
+#科森科技
+def kskj():
+   start = '2019-02-15'
+   end = '2019-04-12'
+   code='603626'
+   return start,end,code
+
+#蓝色光标
+def lsgb():
+    start = '2019-02-15'
+    end = '2019-04-21'
+    code='300058'
+    return start,end,code
+#美的
+def md():
+    start = '2019-02-15'
+    end = '2019-04-21'
+    code='000333'
+    return start,end,code
+
+#视觉中国
+def sjzg():
+    start = '2019-02-15'
+    end = '2019-04-21'
+    code='000681'
+    return start,end,code
+
+
+#联想集团
+def lxjt():
+   start = 20190205
+   end = 20190408
+   code='00992'
+   return start,end,code
+
+start,end,code=shgf()    
+getStockAndIndexGraph(code,start,end)  
+#plotwithSeaborn('sz','2019-02-15','2019-03-15')
+codelist = ['601515', '002565', '002191', '300741','002303','002925','300014','002402','603626'] 
+start = '2019-03-15'
+end = '2019-03-19'
+#getMultilStockGraph(codelist,start,end)
+
+#getMarketIndxGraph(code,start,end)
+
+#getHKStock(code,start,end)
+   
+
+
+
