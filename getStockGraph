@@ -1,4 +1,9 @@
 # -*- coding:utf-8 -*-
+"""
+Created on Wed Apr 10  2019
+
+@author: liuhuanying 
+"""
 
 import math
 import matplotlib.pyplot as plt
@@ -6,19 +11,34 @@ import seaborn as sns
 from datetime import datetime
 import matplotlib.dates as mdates
 import tushare as ts # 该模块是一个免费提供股票交易数据的API<br><br>
-
+import requests#发送http请求
+#绘制多Y轴图表
+from mpl_toolkits.axes_grid1 import host_subplot
+import mpl_toolkits.axisartist as AA
 from pytdx.exhq import TdxExHq_API
 from pytdx.hq import TdxHq_API
 from pytdx.params import TDXParams
 import pandas as pd
 import csv
 import os
+import re
 
+import baseInfor as base
+import publicOption as po
 # 绘图显示中文设置
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 sns.set_style('white',{'font.sans-serif':['simhei','Arial']})
 
+
+#判断输入是否为数字
+def is_number(num):
+  pattern = re.compile(r'^[-+]?[-0-9]\d*\.\d*|[-+]?\.?[0-9]\d*$')
+  result = pattern.match(num)
+  if result:
+    return True
+  else:
+    return False
 
 # 获取股票价格
 def getpriceBytu(code, start, end):
@@ -34,14 +54,6 @@ def getCompositeIndex(market, start, end):
     #按升序日期排序 
     data=data[::-1]
     return data
-
-#根据代码获取公司名称
-def getCompyName(code):
-     #获取基础股票信息
-    base=ts.get_stock_basics()
-    #得到具体公司信息
-    company=base[base.index==code]
-    return company.ix[0,'name']
 
 
 # 数据集名称
@@ -70,64 +82,169 @@ def saveData(name,xdate,pricelist):
             writer.writerows([file_data])
             f.close()
     
-    
 #绘制单个企业股价曲线
-def getStockLie(code,start,end):
+def getPriceLine(code,start,end):
     #获取股价
     res=getpriceBytu(code, start, end)
     close_list = (res['close']).values
     xaxis=  [datetime.strptime(d, '%Y-%m-%d').date() for d in res.index]
-    name=getCompyName(code)  
+    name=base.getCompyName(code)  
     
     #保存企业股价数据到CSV文件
     saveData(name,xaxis,close_list)
     
-    # 线条设置
-    df = pd.DataFrame(dict(date=xaxis,price=close_list)) 
+    #准备数据
+    df = pd.DataFrame(dict(date=xaxis,price=close_list))
     #seaborm模式画图
-    g=sns.lineplot(x="date", y="price", label=name,linewidth=1,marker='o', data=df)
+    sns.lineplot(x="date", y="price", label=name,linewidth=1,marker='o', data=df)
     #matplotlib模式画图
 #    plt.plot(xaxis, close_list, label=name, linewidth=1, marker='o', markersize=2)
     price=(float(close_list[-1])-float(close_list[0]))/float(close_list[0])*100
     #通过标注设置涨跌幅，不同曲线容易重合，因此直接返回，统一显示
 #    plt.annotate("%s涨跌幅：%.2f%%" %(name,price), xy = (xaxex[-4], close_list[-1]), xytext = (xaxex[-4], close_list[-1]))
     #返回该股票的涨跌幅
-    return '%s：%.2f%%' %(name,price)
+#    return '%s：%.2f%%' %(name,price)
+    return name,price
 
 
-#绘制多个企业股价图
-def getMultilStockGraph(codelist,start,end):
+#绘制企业股价涨跌幅/换手率涨跌幅图表
+def getChangesGraph(title,chanelist):
+    #显示网格
+    sns.set_style('whitegrid',{'font.sans-serif':['simhei','Arial']})
+    plt.clf()
+    fig = plt.figure(figsize=(12,8),dpi=80)
+    ax = fig.add_subplot(1,1,1)
+    #准备数据,先用红色画上涨的
+    name= [i[0] for i in chanelist]
+    change= [i[1] for i in chanelist]
+    ax.bar(name, change,width=1,color='red',align='center') 
+    #再用绿色覆盖下跌的
+    nchange= [0] * (len(name))
+    for i in chanelist :
+        if i[1]<0 :
+            nchange[chanelist.index(i)]=i[1]
+    ax.bar(name, nchange,width=1,color='green',align='center') 
+    
+    plt.gcf().autofmt_xdate()  # 自动旋转X轴标签
+    # 打印表头
+    #plt.ylabel('涨跌百分比')
+    plt.title(title)
+    plt.show()
+
+#获得换手率数据
+def getTorData(code,start,end):
+    TorList=[]#换手率前后涨幅
+    TorDailyList=[]#每日换手率
+    #code表示股票代码, 上海股票最前边加0,深圳股票最前边加1
+    if code.startswith('00')or code.startswith('200')or code.startswith('300'):
+        url="http://quotes.money.163.com/service/chddata.html?code=1%s&start=%s&end=%s"%(code,start.replace('-', ''),end.replace('-', ''))
+    else :
+        url="http://quotes.money.163.com/service/chddata.html?code=0%s&start=%s&end=%s"%(code,start.replace('-', ''),end.replace('-', ''))
+    #获取数据
+    r=requests.get(url)
+    r.raise_for_status() 
+    #保存文件
+    csvFile = open('%s.csv'%code, 'wb')
+    for chunk in r.iter_content(100000):
+        csvFile.write(chunk)
+    csvFile.close()
+    #读取文件数据
+    with open('%s.csv'%code, "r", newline='') as f:
+        reader = csv.reader(f)
+        startTor,endTor='',''
+        for row in reader:
+            if row[0]==start :
+                startTor=row[10]
+            if row[0]==end :
+                endTor=row[10]
+                name=row[2]
+            if is_number(row[10]):
+                TorDailyList.append([row[0],row[2],row[10]])
+        #一个文件处理完成，开始计算涨跌幅
+        try:
+            float(startTor)
+            float(endTor)
+        except ValueError:
+            print( "起止日期数据不全 %s，%s"%(startTor,endTor))
+            Tor=0
+        else:
+            if float(startTor)==0 :#有股票停牌，因此可能无数据
+                Tor=0
+            else:
+                Tor=(float(endTor)-float(startTor))/float(startTor)*100
+            TorList.append([name,Tor])
+    return TorList,TorDailyList
+
+def plotInit():
     plt.clf()
     fig = plt.figure(figsize=(12,8),dpi=80)
     ax = fig.add_subplot(1,1,1)
     #指定X轴的以日期格式（带小时）显示
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d')) 
+    plt.gcf().autofmt_xdate()  # 自动旋转日期标记
+    return ax     
     
+#绘制企业换手率图表 ,tushare实际使用api.finance.ifeng.com接口，该接口已经不返回换手率数据，因此只能换用其他接口
+def getTurnOverGraph(title,codelist,start,end):  
+    TorList=[]#换手率前后涨幅
+    plotInit()  
+    for code in codelist :
+        #获取换手率数据
+        changlist,TorDailyList=getTorData(code,start,end)
+        #绘制该企业换手率曲线
+        plotTorLineGraph(TorDailyList)
+        TorList+=changlist
+    plt.title(title)
+    plt.legend()
+    plt.show()
+    #得到换手率涨跌图    
+    getChangesGraph(title,TorList)
+
+#绘制单个企业的换手率曲线,如果ax没有被赋值，说明是独立画图，否则是复合制图
+def plotTorLineGraph(graphData,ax=0):
+      
+    xdate=[i[0] for i in graphData]
+    xaxis=  [datetime.strptime(d, '%Y-%m-%d').date() for d in xdate]
+    name=[i[1] for i in graphData] 
+    yvalue=[float(i[2]) for i in graphData] 
+    if ax==0 :
+        plt.plot(xaxis, yvalue, linewidth=1,label=name[0], marker='o', markersize=2)
+    else:
+        ax2 = ax.twinx()  
+        ax2.plot(xaxis, yvalue, label='换手率', linewidth=1, color='red', marker='o', markerfacecolor='red', markersize=2)
+
+        # 取数列最大数值与最小值做图表的边界值。
+        ax2.set_ylim(min(yvalue), max(yvalue))
+        ax2.legend(loc='upper center')
+        return ax2
+
+#绘制多个企业股价图
+def getMultilStockGraph(title,codelist,start,end):
+    
+    plotInit()
     #统计企业涨跌幅信息
     chanelist=[]
     for i in codelist:
-        chanelist.append(getStockLie(i,start,end))
-    
+        name,price=getPriceLine(i,start,end)
+        chanelist.append([name,price])
     plt.gcf().autofmt_xdate()  # 自动旋转日期标记
     
     # 打印表头
-    plt.xlabel('')
     plt.ylabel('股价')
-#    name=getCompyName(code)
-    plt.title('2019-315后电子烟相关上市企业股价走势')
+    plt.title(title)
     #根据企业个数，调整图例分类的列数
     codelen=round(math.sqrt(len(codelist)))
     plt.legend(loc='center left',ncol=codelen)
     plt.show()
     
     #打印企业涨跌幅
-    print(chanelist)
+    getChangesGraph(title,chanelist)
     #打印指数涨跌幅
-    printMarketIdxChange()
+    printMarketIdxChange(start, end)
     
 
 #打印大盘涨跌幅
-def printMarketIdxChange():
+def printMarketIdxChange(start, end):
     MarketIdx=getCompositeIndex('sz', start, end)
     market_list=(MarketIdx['close']).values 
     szprice=(float(market_list[-1])-float(market_list[0]))/float(market_list[0])*100
@@ -140,7 +257,7 @@ def printMarketIdxChange():
     print("%s：%.2f%%" %('上证指数',shprice))
     
 
-#使用seaborn绘制
+#使用seaborn绘制图表
 def plotwithSeaborn(code,start, end):
     sns.set(font="simhei")
     
@@ -167,6 +284,8 @@ def getMarketIndxGraph(code,start,end):
     x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in MarketIdx.index]
     market_list=(MarketIdx['close']).values
     
+    #保存企业股价数据到CSV文件
+    saveData(name,x,market_list)
     
     plt.clf()
     # 线条设置
@@ -177,31 +296,26 @@ def getMarketIndxGraph(code,start,end):
     plt.gcf().autofmt_xdate()  # 自动旋转日期标记
 
     # 打印表头
-    #plt.xlabel('time')
     plt.ylabel('price')
     plt.title('%s趋势'%(name))
     plt.legend()
     plt.show()
     
 #绘制股价与大盘指数复合图
-def getStockAndIndexGraph(code,start,end):
+def getPriceAndIndexGraph(code,start,end):
     
     #获取股价
     res=getpriceBytu(code, start, end)
     close_list = (res['close']).values
+    price=(float(close_list[-1])-float(close_list[0]))/float(close_list[0])*100
     x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in res.index]
     
-    Compname=getCompyName(code)
+    Compname=base.getCompyName(code)
      
     #保存企业股价数据到CSV文件
     saveData(Compname,x,close_list)
 
-    plt.clf()
-    fig = plt.figure(figsize=(8,8),dpi=80)
-    ax = fig.add_subplot(111)
-    #指定X轴的以日期格式（带小时）显示
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y%m%d'))
-    
+    ax=plotInit() 
     #seaborm模式画图
 #    df = pd.DataFrame(dict(date=x,price=close_list))
 #    g=sns.lineplot(x="date", y="price", label='公司股价',linewidth=1,color='blue',marker='o', data=df)
@@ -230,21 +344,270 @@ def getStockAndIndexGraph(code,start,end):
 
     # 取数列最大数值与最小值做图表的边界值。
     ax2.set_ylim(min(market_list)-1, max(market_list)+50)
-#    ax2.set_xlim(min(x), max(x))
     ax2.legend(loc='upper center')
     
     plt.gcf().autofmt_xdate()  # 自动旋转日期标记
-
-    plt.title('%s股价与%s趋势'%(Compname,Marketname))
+    
+    title='%s股价与%s趋势'%(Compname,Marketname)
+    plt.title(title)
 #    plt.fill_between(x[:21],0,max(market_list)+50,facecolor='#EEEEEE',alpha=0.5)
 #    plt.fill_between(x[-15:],0,max(market_list)+50,facecolor='#EEEEEE',alpha=0.5)
     #plt.legend()
     plt.show()
     
+    #统计涨跌幅
+    clist=[]
+    clist.append([Compname,price])
+    getChangesGraph(title,clist)    
 
+#绘制企业股票与舆情热度曲线
+def getPriceAndPoGraph(code,start,end,poFileName):
+    
+    #获取股价
+    res=getpriceBytu(code, start, end)
+    close_list = (res['close']).values
+    x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in res.index]
+    
+    Compname=base.getCompyName(code)
+     
+    #保存企业股价数据到CSV文件
+    saveData(Compname,x,close_list)
 
+    ax=plotInit()
+    
+    # 线条设置
+    ax.plot(x, close_list, label='公司股价', linewidth=1, color='blue', marker='o', markersize=2)
+    # 取数列最大数值与最小值做图表的边界值。
+    ax.set_ylim(min(close_list)-1, max(close_list)+2)
+    ax.legend(loc='upper left')
+    
+    #绘制舆情热度趋势图
+    plotPoLineGraph(ax,poFileName)
+  
+    
+    plt.gcf().autofmt_xdate()  # 自动旋转日期标记
+    
+    title='%s股价与舆情趋势'%(Compname)
+    plt.title(title)
+    plt.show()
 
+#绘制股价和换手率曲线
+def getPriceAndTorGraph(code,start,end):
+     #获取股价
+    res=getpriceBytu(code, start, end)
+    close_list = (res['close']).values
+    x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in res.index]
+    
+    Compname=base.getCompyName(code)
+    #保存企业股价数据到CSV文件
+    saveData(Compname,x,close_list)
 
+    ax=plotInit()
+    
+    # 线条设置
+    ax.plot(x, close_list, label='公司股价', linewidth=1, color='blue', marker='o', markersize=2)
+    # 取数列最大数值与最小值做图表的边界值。
+    ax.set_ylim(min(close_list)-1, max(close_list)+2)
+    ax.legend(loc='upper left')
+    
+    changlist,TorDailyList=getTorData(code,start,end)
+    #绘制该企业换手率曲线
+    plotTorLineGraph(TorDailyList,ax)
+     
+    plt.gcf().autofmt_xdate()  # 自动旋转日期标记
+    
+    title='%s股价与换手率'%(Compname)
+    plt.title(title)
+    plt.show()
+        
+#绘制股价、舆情与转手率三者变化图    
+def getPriceAndPoAndTorGraph(title,code,start,end,poFileName):
+    
+    #获取股价
+    res=getpriceBytu(code, start, end)
+    close_list = (res['close']).values
+    x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in res.index]
+    
+    Compname=base.getCompyName(code)
+     
+    #保存企业股价数据到CSV文件
+    saveData(Compname,x,close_list)
+    
+    #设置图像大小
+    plt.figure(figsize=(12,8),dpi=80) 
+    host = host_subplot(111, axes_class=AA.Axes)
+    # 线条设置
+    host.plot(x, close_list, label='公司股价', linewidth=1, color='blue', marker='o', markersize=2)
+    host.legend(loc='upper left')
+  
+    # 取数列最大数值与最小值做图表的边界值。
+    ax = host.twinx()
+    ax.set_ylim(min(close_list)-1, max(close_list)+2)
+    
+    #绘制舆情热度趋势图
+    plotPoLineGraph(ax,poFileName)
+   
+    #绘制转手率趋势图
+    changlist,TorDailyList=getTorData(code,start,end)
+    #绘制该企业换手率曲线
+    xdate=[i[0] for i in TorDailyList]
+    xaxis=  [datetime.strptime(d, '%Y-%m-%d').date() for d in xdate]
+    yvalue=[float(i[2]) for i in TorDailyList] 
+    
+    ax2 = host.twinx()
+    #Y轴偏移   
+    offset = 60
+    new_fixed_axis = ax2.get_grid_helper().new_fixed_axis
+    ax2.axis["right"] = new_fixed_axis(loc="right",axes=ax2,offset=(offset, 0))
+    ax2.axis["right"].toggle(all=True)
+    ax2.set_ylabel("转手率")
+    ax2.plot(xaxis, yvalue, label='换手率', linewidth=1, color='brown', marker='o', markerfacecolor='red', markersize=2)
+    # 取数列最大数值与最小值做图表的边界值。
+    ax2.set_ylim(min(yvalue), max(yvalue))
+    ax2.legend(loc='upper right')
+    
+    #调整日期显示格式    
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d')) 
+    plt.gcf().autofmt_xdate()  # 自动旋转日期标记
+    
+    title='%s股价、舆情与转手率趋势'%(Compname)
+    plt.title(title)
+    plt.show()
+
+#绘制股价、舆情热度、舆情情感和转手率四者变化图  
+def getPriceAndPoAndTorAndSentimentGraph(title,code,start,end,fileName):
+    #获取股价
+    res=getpriceBytu(code, start, end)
+    close_list = (res['close']).values
+    x=  [datetime.strptime(d, '%Y-%m-%d').date() for d in res.index]
+    
+    Compname=base.getCompyName(code)
+     
+    #保存企业股价数据到CSV文件
+    saveData(Compname,x,close_list)
+    
+    #设置图像大小
+    plt.figure(figsize=(12,8),dpi=80) 
+    host = host_subplot(111, axes_class=AA.Axes)
+    sns.set_style('whitegrid',{'font.sans-serif':['simhei','Arial']})
+ 
+    # 线条设置
+    host.plot(x, close_list, label='公司股价', linewidth=1, color='blue', marker='o', markersize=2)
+    host.legend(loc='upper left')
+    host.set_ylim(-max(close_list)-2, max(close_list)+2)
+     
+    
+    #绘制舆情热度、情感趋势图
+    ax = host.twinx()
+    plotPoandSentimentLineGraph(ax,fileName)
+   
+    #绘制转手率趋势图
+    changlist,TorDailyList=getTorData(code,start,end)
+    #绘制该企业换手率曲线
+    xdate=[i[0] for i in TorDailyList]
+    xaxis=  [datetime.strptime(d, '%Y-%m-%d').date() for d in xdate]
+    yvalue=[float(i[2]) for i in TorDailyList] 
+    
+    ax2 = host.twinx()
+    #Y轴偏移   
+    offset = 60
+    new_fixed_axis = ax2.get_grid_helper().new_fixed_axis
+    ax2.axis["right"] = new_fixed_axis(loc="right",axes=ax2,offset=(offset, 0))
+    ax2.axis["right"].toggle(all=True)
+    ax2.set_ylabel("转手率")
+    ax2.plot(xaxis, yvalue, label='  换手率', linewidth=1, color='red', marker='o', markerfacecolor='red', markersize=2)
+    # 取数列最大数值与最小值做图表的边界值。
+    ax2.set_ylim(-max(yvalue), max(yvalue))
+    ax2.legend(loc='upper center')
+    
+    #调整日期显示格式    
+#    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d')) 
+    plt.gcf().autofmt_xdate()  # 自动旋转日期标记
+    
+    title='%s舆情热度、情感指数与股价、转手率趋势'%(Compname)
+    plt.title(title)
+    plt.show()
+    
+#在复合图中绘制舆情热度曲线
+def plotPoLineGraph(ax,poFileName):
+      #开始绘制舆情热度曲线   
+    data=base.getDatabyExcel(poFileName)
+    xdate=[i[0] for i in data[1:] ]
+    xaxis=[datetime.strptime(d, '%Y-%m-%d').date() for d in xdate]
+    y=[float(i[1]) for i in data[1:] ]
+   
+    #归一化处理
+    tmp=min(y)
+    off=max(y)-tmp
+    yvalue=[(i-tmp)/off   for i in y]
+
+    ax2 = ax.twinx()  
+    ax2.plot(xaxis, yvalue, label='舆情热度', linewidth=1, color='#EEEEEE', marker='o', markerfacecolor='red', markersize=2)
+    ax2.fill_between(xaxis,0,yvalue,facecolor='#EEEEEE',alpha=0.5)
+
+    # 取数列最大数值与最小值做图表的边界值。
+    ax2.set_ylim(min(yvalue), max(yvalue))
+    ax2.legend(loc='upper center')
+    return ax2
+
+#在复合图中绘制舆情热度、情感双曲线
+def plotPoandSentimentLineGraph(ax,poFileName):
+      #开始绘制舆情热度曲线   
+    data=base.getDatabyExcel(poFileName)
+    xdate=[i[0] for i in data[1:] ]
+    xaxis=[datetime.strptime(d, '%Y-%m-%d').date() for d in xdate]
+    y=[float(i[1]) for i in data[1:] ]
+   
+    #归一化处理
+    tmp=min(y)
+    off=max(y)-tmp
+    yvalue=[(i-tmp)/off   for i in y]
+
+    ax2 = ax.twinx()  
+    ax2.plot(xaxis, yvalue, label='舆情热度', linewidth=1, color='#EEEEEE', marker='o', markerfacecolor='red', markersize=2)
+    ax2.fill_between(xaxis,0,yvalue,facecolor='#EEEEEE',alpha=0.5)
+
+    # 取数列最大数值与最小值做图表的边界值。
+#    ax2.legend(loc='upper center')
+    
+    #归一化处理 
+    positiveR=[float(i[2]) for i in data[1:] ]
+    negativeR=[float(i[4]) for i in data[1:] ]
+    
+    changes = [positiveR[i]-negativeR[i] for i in range(0,len(positiveR))]
+
+    tmp=max(changes)-min(changes)
+    tvalue=[(i)/tmp   for i in changes]
+    ax2.plot(xaxis, tvalue, label='舆论情感', linewidth=1, color='olive', marker='o', markerfacecolor='red', markersize=2)
+    ax2.legend(loc='upper right' ,ncol=2)
+    
+    ax2.set_ylim(min(tvalue), max(yvalue))
+    ax2.set_ylabel("舆情热度与舆论情感")
+
+    
+    return ax2
+    
+#绘制企业股票换手率与舆情热度曲线
+def getTorAndPoGraph(code,start,end,poFileName):
+    Compname=base.getCompyName(code)
+    #获取换手率数据
+    TorList,TorDailyList=getTorData(code,start,end)
+
+    ax=plotInit()
+    #绘制换手率曲线
+    plotTorLineGraph(TorDailyList)
+    ax.legend(loc='upper left')
+    #绘制舆情热度曲线
+    plotPoLineGraph(ax,poFileName)
+
+    plt.gcf().autofmt_xdate()  # 自动旋转日期标记
+    title='%s换手率与舆情趋势'%(Compname)
+    plt.title(title)
+    plt.legend()
+    plt.show()
+    
+    
+    
 #获取香港主板股票数据
 def getHKStock(code,start,end):
    #标准行情 
@@ -280,126 +643,58 @@ def getHKStock(code,start,end):
    ax.set_ylim(min(close_list)-1, max(close_list)+2)
  
 
-   
 
-#三全食品
-def sqsp():
-   start = '2019-01-10'
-   end = '2019-03-26'
-   code='002216'
-   return start,end,code
-#方正科技
-def fzkj():
-   start = '2019-02-05'
-   end = '2019-04-08'
-   code='600601'
-   return start,end,code
+##############主程序运行区
+start,end,code,filename=base.sjzg()  
+title="视觉中国舆情发展趋势"
+getPriceAndPoAndTorAndSentimentGraph(title,code,start,end,filename) 
+getPriceAndPoAndTorGraph(title,code,start,end,filename) 
+#getMarketIndxGraph(code,start,end)  
+#po.PlotHeatGraph(title,code,start,end,filename) 
+#getPriceAndIndexGraph(code,start,end)  
+#getPriceAndPoGraph(code,start,end,filename) 
 
-#视觉中国
-def sjzg():
-   start = '2019-03-05'
-   end = '2019-04-12'
-   code='000681'
-   return start,end,code
-
-#东风股份
-def dfgf():
-   start = '2019-02-15'
-   end = '2019-04-12'
-   code='601515'
-   return start,end,code
-
-#顺灏股份 
-def shgf():
-   start = '2019-02-15'
-   end = '2019-04-12'
-   code='002565'
-   return start,end,code
-
-#劲嘉股份
-def jjgf():
-   start = '2019-02-15'
-   end = '2019-04-12'
-   code='002191'
-   return start,end,code
-
-#华宝股份
-def hbgf():
-   start = '2019-02-15'
-   end = '2019-04-12'
-   code='300741'
-   return start,end,code
-#美盈森
-def mys():
-   start = '2019-02-15'
-   end = '2019-04-12'
-   code='002303'
-   return start,end,code
-# 盈趣科技
-def yqkj():
-   start = '2019-02-15'
-   end = '2019-04-12'
-   code='002925'
-   return start,end,code
-# 亿纬锂能
-def ywln():
-   start = '2019-02-15'
-   end = '2019-04-12'
-   code='300014'
-   return start,end,code
-#和而泰
-def hlt():
-   start = '2019-02-15'
-   end = '2019-04-12'
-   code='002402'
-   return start,end,code
-#科森科技
-def kskj():
-   start = '2019-02-15'
-   end = '2019-04-12'
-   code='603626'
-   return start,end,code
-
-#蓝色光标
-def lsgb():
-    start = '2019-02-15'
-    end = '2019-04-21'
-    code='300058'
-    return start,end,code
-#美的
-def md():
-    start = '2019-02-15'
-    end = '2019-04-21'
-    code='000333'
-    return start,end,code
-
-#视觉中国
-def sjzg():
-    start = '2019-02-15'
-    end = '2019-04-21'
-    code='000681'
-    return start,end,code
+#TorTitle='视觉中国换手率走势'
+#codelist = ['000681'] 
+#getTurnOverGraph(TorTitle,codelist,start,end) 
+#getTorAndPoGraph(code,start,end,filename) 
+#getPriceAndTorGraph(code,start,end)      
+#codelist = ['000681','002496','300194'] 
+#StockTitle='关注个股股价'
+#TorTitle='关注个股换手率'
+#start = '2019-03-08'
+#end = '2019-04-19'#必须是交易日
 
 
-#联想集团
-def lxjt():
-   start = 20190205
-   end = 20190408
-   code='00992'
-   return start,end,code
+#getMultilStockGraph(StockTitle,codelist,start,end)
+#getTurnOverGraph(TorTitle,codelist,start,end)
 
-start,end,code=shgf()    
-getStockAndIndexGraph(code,start,end)  
+
+def main():
+    
+    start,end,code=base.sjzg()    
+#    getPriceAndIndexGraph(code,start,end)  
+    getStockAndPoGraph(code,start,end)  
+    getTorAndPoGraph(code,start,end) 
 #plotwithSeaborn('sz','2019-02-15','2019-03-15')
-codelist = ['601515', '002565', '002191', '300741','002303','002925','300014','002402','603626'] 
-start = '2019-03-15'
-end = '2019-03-19'
-#getMultilStockGraph(codelist,start,end)
+#电子烟相关企业列表
+#codelist = ['601515', '002565', '002191', '300741','002303','002925','300014','002402','603626'] 
+#codelist = ['601515', '002565', '002191'] 
+#StockTitle='2019-315后电子烟相关上市企业股价走势'
 
-#getMarketIndxGraph(code,start,end)
+#关注个股
+    codelist = ['000681','002496','300194'] 
+    StockTitle='关注个股股价'
+    TorTitle='关注个股换手率'
+    start = '2019-03-08'
+    end = '2019-04-19'#必须是交易日
+
+
+    getMultilStockGraph(StockTitle,codelist,start,end)
+    getTurnOverGraph(TorTitle,codelist,start,end)
 
 #getHKStock(code,start,end)
-   
-
+#查看tushare版本   
+#print(ts.__version__)
 
 
